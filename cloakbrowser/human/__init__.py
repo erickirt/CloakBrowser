@@ -380,6 +380,30 @@ def _patch_locator_class_sync():
     def _get_cfg(self):
         return getattr(self.page, '_human_cfg', None)
 
+    def _route_target(self):
+        """Resolution target for a humanized locator action (#428).
+
+        Main-frame locators return the Page (unchanged behavior). A locator that
+        belongs to a *sub-frame* returns that frame's humanized wrapper so the
+        selector resolves in the frame's own document. Returns ``None`` when the
+        owning sub-frame is known but not yet humanized, so the caller falls back
+        to the native Playwright locator method (frame-correct, un-humanized).
+        """
+        page = self.page
+        impl_frame = getattr(getattr(self, "_impl_obj", None), "_frame", None)
+        if impl_frame is None:
+            return page
+        try:
+            if impl_frame is page.main_frame._impl_obj:
+                return page
+            for f in page.frames:
+                if getattr(f, "_impl_obj", None) is impl_frame:
+                    return f if getattr(f, "_human_patched", False) else None
+            # Frame not among page.frames (unknown/detached) -> legacy Page path.
+            return page
+        except Exception:
+            return page
+
     def _forward_kwargs(kwargs):
         out = {}
         if "timeout" in kwargs:
@@ -392,31 +416,51 @@ def _patch_locator_class_sync():
 
     def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
-            self.page.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_fill(self, value, **kwargs)
+            else:
+                tgt.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             _orig_fill(self, value, **kwargs)
 
     def _humanized_click(self, **kwargs):
         if _is_humanized(self):
-            self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_click(self, **kwargs)
+            else:
+                tgt.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_click(self, **kwargs)
 
     def _humanized_type(self, text, **kwargs):
         if _is_humanized(self):
-            self.page.type(_get_selector(self), text, **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_type(self, text, **kwargs)
+            else:
+                tgt.type(_get_selector(self), text, **_forward_kwargs(kwargs))
         else:
             _orig_type(self, text, **kwargs)
 
     def _humanized_dblclick(self, **kwargs):
         if _is_humanized(self):
-            self.page.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_dblclick(self, **kwargs)
+            else:
+                tgt.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_dblclick(self, **kwargs)
 
     def _humanized_hover(self, **kwargs):
         if _is_humanized(self):
-            self.page.hover(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_hover(self, **kwargs)
+            else:
+                tgt.hover(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_hover(self, **kwargs)
 
@@ -450,6 +494,10 @@ def _patch_locator_class_sync():
 
     def _humanized_check(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_check(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
@@ -457,12 +505,16 @@ def _patch_locator_class_sync():
                 human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if not checked:
-                self.page.click(_get_selector(self), **fwd)
+                tgt.click(_get_selector(self), **fwd)
         else:
             _orig_check(self, **kwargs)
 
     def _humanized_uncheck(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_uncheck(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
@@ -470,24 +522,32 @@ def _patch_locator_class_sync():
                 human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if checked:
-                self.page.click(_get_selector(self), **fwd)
+                tgt.click(_get_selector(self), **fwd)
         else:
             _orig_uncheck(self, **kwargs)
 
     def _humanized_set_checked(self, checked, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_set_checked(self, checked, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             current = self.is_checked()
             if current != checked:
-                self.page.click(_get_selector(self), **fwd)
+                tgt.click(_get_selector(self), **fwd)
         else:
             _orig_set_checked(self, checked, **kwargs)
 
     def _humanized_select_option(self, value=None, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_select_option(self, value, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            self.page.hover(selector, **fwd)
+            tgt.hover(selector, **fwd)
             sleep_ms(rand(100, 300))
             _orig_select_option(self, value, **kwargs)
         else:
@@ -495,10 +555,14 @@ def _patch_locator_class_sync():
 
     def _humanized_press(self, key, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_press(self, key, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not _is_selector_focused(self.page, selector):
-                self.page.click(selector, **fwd)
+            if not _is_selector_focused(tgt, selector):
+                tgt.click(selector, **fwd)
             sleep_ms(rand(50, 150))
             self.page.keyboard.press(key)
         else:
@@ -506,10 +570,14 @@ def _patch_locator_class_sync():
 
     def _humanized_press_sequentially(self, text, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_press_sequentially(self, text, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not _is_selector_focused(self.page, selector):
-                self.page.click(selector, **fwd)
+            if not _is_selector_focused(tgt, selector):
+                tgt.click(selector, **fwd)
             sleep_ms(rand(50, 150))
             self.page.keyboard.type(text)
         else:
@@ -517,7 +585,11 @@ def _patch_locator_class_sync():
 
     def _humanized_tap(self, **kwargs):
         if _is_humanized(self):
-            self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_tap(self, **kwargs)
+            else:
+                tgt.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_tap(self, **kwargs)
 
@@ -546,10 +618,14 @@ def _patch_locator_class_sync():
 
     def _humanized_clear(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                _orig_clear(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not _is_selector_focused(self.page, selector):
-                self.page.click(selector, **fwd)
+            if not _is_selector_focused(tgt, selector):
+                tgt.click(selector, **fwd)
             sleep_ms(rand(50, 100))
             self.page.keyboard.press(_SELECT_ALL)
             sleep_ms(rand(30, 80))
@@ -616,6 +692,30 @@ def _patch_locator_class_async():
     def _get_cfg(self):
         return getattr(self.page, '_human_cfg', None)
 
+    def _route_target(self):
+        """Resolution target for a humanized locator action (#428).
+
+        Main-frame locators return the Page (unchanged behavior). A locator that
+        belongs to a *sub-frame* returns that frame's humanized wrapper so the
+        selector resolves in the frame's own document. Returns ``None`` when the
+        owning sub-frame is known but not yet humanized, so the caller falls back
+        to the native Playwright locator method (frame-correct, un-humanized).
+        """
+        page = self.page
+        impl_frame = getattr(getattr(self, "_impl_obj", None), "_frame", None)
+        if impl_frame is None:
+            return page
+        try:
+            if impl_frame is page.main_frame._impl_obj:
+                return page
+            for f in page.frames:
+                if getattr(f, "_impl_obj", None) is impl_frame:
+                    return f if getattr(f, "_human_patched", False) else None
+            # Frame not among page.frames (unknown/detached) -> legacy Page path.
+            return page
+        except Exception:
+            return page
+
     def _forward_kwargs(kwargs):
         out = {}
         if "timeout" in kwargs:
@@ -628,31 +728,51 @@ def _patch_locator_class_async():
 
     async def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
-            await self.page.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_fill(self, value, **kwargs)
+            else:
+                await tgt.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             await _orig_fill(self, value, **kwargs)
 
     async def _humanized_click(self, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_click(self, **kwargs)
+            else:
+                await tgt.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_click(self, **kwargs)
 
     async def _humanized_type(self, text, **kwargs):
         if _is_humanized(self):
-            await self.page.type(_get_selector(self), text, **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_type(self, text, **kwargs)
+            else:
+                await tgt.type(_get_selector(self), text, **_forward_kwargs(kwargs))
         else:
             await _orig_type(self, text, **kwargs)
 
     async def _humanized_dblclick(self, **kwargs):
         if _is_humanized(self):
-            await self.page.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_dblclick(self, **kwargs)
+            else:
+                await tgt.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_dblclick(self, **kwargs)
 
     async def _humanized_hover(self, **kwargs):
         if _is_humanized(self):
-            await self.page.hover(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_hover(self, **kwargs)
+            else:
+                await tgt.hover(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_hover(self, **kwargs)
 
@@ -688,6 +808,10 @@ def _patch_locator_class_async():
 
     async def _humanized_check(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_check(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
@@ -699,12 +823,16 @@ def _patch_locator_class_async():
                 )
             checked = await self.is_checked()
             if not checked:
-                await self.page.click(_get_selector(self), **fwd)
+                await tgt.click(_get_selector(self), **fwd)
         else:
             await _orig_check(self, **kwargs)
 
     async def _humanized_uncheck(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_uncheck(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
@@ -716,24 +844,32 @@ def _patch_locator_class_async():
                 )
             checked = await self.is_checked()
             if checked:
-                await self.page.click(_get_selector(self), **fwd)
+                await tgt.click(_get_selector(self), **fwd)
         else:
             await _orig_uncheck(self, **kwargs)
 
     async def _humanized_set_checked(self, checked, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_set_checked(self, checked, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             current = await self.is_checked()
             if current != checked:
-                await self.page.click(_get_selector(self), **fwd)
+                await tgt.click(_get_selector(self), **fwd)
         else:
             await _orig_set_checked(self, checked, **kwargs)
 
     async def _humanized_select_option(self, value=None, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_select_option(self, value, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            await self.page.hover(selector, **fwd)
+            await tgt.hover(selector, **fwd)
             await async_sleep_ms(rand(100, 300))
             await _orig_select_option(self, value, **kwargs)
         else:
@@ -741,10 +877,14 @@ def _patch_locator_class_async():
 
     async def _humanized_press(self, key, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_press(self, key, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not await _async_is_selector_focused(self.page, selector):
-                await self.page.click(selector, **fwd)
+            if not await _async_is_selector_focused(tgt, selector):
+                await tgt.click(selector, **fwd)
             await async_sleep_ms(rand(50, 150))
             await self.page.keyboard.press(key)
         else:
@@ -752,10 +892,14 @@ def _patch_locator_class_async():
 
     async def _humanized_press_sequentially(self, text, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_press_sequentially(self, text, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not await _async_is_selector_focused(self.page, selector):
-                await self.page.click(selector, **fwd)
+            if not await _async_is_selector_focused(tgt, selector):
+                await tgt.click(selector, **fwd)
             await async_sleep_ms(rand(50, 150))
             await self.page.keyboard.type(text)
         else:
@@ -763,7 +907,11 @@ def _patch_locator_class_async():
 
     async def _humanized_tap(self, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_tap(self, **kwargs)
+            else:
+                await tgt.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_tap(self, **kwargs)
 
@@ -792,10 +940,14 @@ def _patch_locator_class_async():
 
     async def _humanized_clear(self, **kwargs):
         if _is_humanized(self):
+            tgt = _route_target(self)
+            if tgt is None:
+                await _orig_clear(self, **kwargs)
+                return
             fwd = _forward_kwargs(kwargs)
             selector = _get_selector(self)
-            if not await _async_is_selector_focused(self.page, selector):
-                await self.page.click(selector, **fwd)
+            if not await _async_is_selector_focused(tgt, selector):
+                await tgt.click(selector, **fwd)
             await async_sleep_ms(rand(50, 100))
             await self.page.keyboard.press(_SELECT_ALL)
             await async_sleep_ms(rand(30, 80))
@@ -1567,41 +1719,164 @@ def _patch_single_frame_sync(
         return
     frame._human_patched = True
 
+    # Frame-scoped resolution: humanize via ``frame.locator(selector)`` so the
+    # selector resolves in the sub-frame's own document, while the mouse stays
+    # page-level (bounding_box() is already page/viewport-space). Mirrors the JS
+    # wrapper's patchSingleFrame/moveToFrameSelector. #428.
+    _orig_frame_click = frame.click
+    _orig_frame_dblclick = frame.dblclick
+    _orig_frame_hover = frame.hover
+    _orig_frame_type = frame.type
+    _orig_frame_fill = frame.fill
+    _orig_frame_check = frame.check
+    _orig_frame_uncheck = frame.uncheck
     _orig_frame_select_option = frame.select_option
+    _orig_frame_press = frame.press
     _orig_frame_drag_and_drop = getattr(frame, 'drag_and_drop', None)
 
+    stealth_world = getattr(page, '_stealth_world', None)
+    cdp_session = None
+    if stealth_world is not None:
+        try:
+            cdp_session = stealth_world.get_cdp_session()
+        except Exception:
+            pass
+
+    def _native_kwargs(kwargs: dict) -> dict:
+        # Native Playwright frame methods don't accept our ``human_config`` kwarg.
+        return {k: v for k, v in kwargs.items() if k != "human_config"}
+
+    def _deadline_remaining(kwargs: dict):
+        timeout = kwargs.get("timeout", 30000)
+        deadline = time.monotonic() + timeout / 1000.0
+        return lambda: max(0.0, (deadline - time.monotonic()) * 1000)
+
+    def _frame_is_input(selector: str) -> bool:
+        try:
+            return bool(frame.locator(selector).first.evaluate(
+                "el => { const t = el.tagName.toLowerCase();"
+                " return t === 'input' || t === 'textarea'"
+                " || el.getAttribute('contenteditable') === 'true'; }"
+            ))
+        except Exception:
+            return False
+
+    def _frame_is_focused(selector: str) -> bool:
+        try:
+            return bool(frame.locator(selector).first.evaluate(
+                "el => el === document.activeElement"
+            ))
+        except Exception:
+            return False
+
+    def _move_to_frame_selector(selector: str, kwargs: dict, input_bias: bool, remaining_ms):
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        if call_cfg.idle_between_actions:
+            human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
+        loc = frame.locator(selector).first
+        try:
+            loc.scroll_into_view_if_needed(timeout=max(1, remaining_ms()))
+        except Exception:
+            pass
+        try:
+            box = loc.bounding_box(timeout=max(1, remaining_ms()))
+        except Exception:
+            box = None
+        if not box:
+            return None
+        is_input = input_bias or _frame_is_input(selector)
+        target = click_target(box, is_input, call_cfg)
+        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
+        cursor.x = target.x
+        cursor.y = target.y
+        return call_cfg, is_input
+
     def _frame_click(selector: str, **kwargs: Any) -> None:
-        page.click(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            _orig_frame_click(selector, **_native_kwargs(kwargs))
+            return
+        human_click(raw_mouse, moved[1], moved[0])
 
     def _frame_dblclick(selector: str, **kwargs: Any) -> None:
-        page.dblclick(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            _orig_frame_dblclick(selector, **_native_kwargs(kwargs))
+            return
+        raw_mouse.down(click_count=2)
+        sleep_ms(rand(30, 60))
+        raw_mouse.up(click_count=2)
 
     def _frame_hover(selector: str, **kwargs: Any) -> None:
-        page.hover(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            _orig_frame_hover(selector, **_native_kwargs(kwargs))
 
     def _frame_type(selector: str, text: str, **kwargs: Any) -> None:
-        page.type(selector, text, **kwargs)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        sleep_ms(rand_range(call_cfg.field_switch_delay))
+        _frame_click(selector, **kwargs)
+        sleep_ms(rand(100, 250))
+        try:
+            human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp_session)
+        except Exception:
+            _orig_frame_type(selector, text, **_native_kwargs(kwargs))
 
     def _frame_fill(selector: str, value: str, **kwargs: Any) -> None:
-        page.fill(selector, value, **kwargs)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        sleep_ms(rand_range(call_cfg.field_switch_delay))
+        _frame_click(selector, **kwargs)
+        sleep_ms(rand(100, 250))
+        originals.keyboard_press(_SELECT_ALL)
+        sleep_ms(rand(30, 80))
+        originals.keyboard_press("Backspace")
+        sleep_ms(rand(50, 150))
+        try:
+            human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp_session)
+        except Exception:
+            _orig_frame_fill(selector, value, **_native_kwargs(kwargs))
 
     def _frame_check(selector: str, **kwargs: Any) -> None:
-        page.check(selector, **kwargs)
+        try:
+            checked = frame.locator(selector).first.is_checked()
+        except Exception:
+            _orig_frame_check(selector, **_native_kwargs(kwargs))
+            return
+        if not checked:
+            try:
+                _frame_click(selector, **kwargs)
+            except Exception:
+                _orig_frame_check(selector, **_native_kwargs(kwargs))
 
     def _frame_uncheck(selector: str, **kwargs: Any) -> None:
-        page.uncheck(selector, **kwargs)
+        try:
+            checked = frame.locator(selector).first.is_checked()
+        except Exception:
+            _orig_frame_uncheck(selector, **_native_kwargs(kwargs))
+            return
+        if checked:
+            try:
+                _frame_click(selector, **kwargs)
+            except Exception:
+                _orig_frame_uncheck(selector, **_native_kwargs(kwargs))
 
     def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
-        page.hover(selector, **kwargs)
+        _frame_hover(selector, **kwargs)
         sleep_ms(rand(100, 300))
-        return _orig_frame_select_option(selector, value, **kwargs)
+        return _orig_frame_select_option(selector, value, **_native_kwargs(kwargs))
 
     def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
-        page.press(selector, key, **kwargs)
+        if not _frame_is_focused(selector):
+            _frame_click(selector, **kwargs)
+        sleep_ms(rand(50, 150))
+        originals.keyboard_press(key)
 
     def _frame_clear(selector: str, **kwargs: Any) -> None:
-        if not _is_selector_focused(page, selector):
-            page.click(selector, **kwargs)
+        if not _frame_is_focused(selector):
+            _frame_click(selector, **kwargs)
         sleep_ms(rand(50, 100))
         originals.keyboard_press(_SELECT_ALL)
         sleep_ms(rand(30, 80))
@@ -1641,13 +1916,6 @@ def _patch_single_frame_sync(
     frame.drag_and_drop = _frame_drag_and_drop
 
     # --- Patch frame-level ElementHandle selectors ---
-    stealth_world = getattr(page, '_stealth_world', None)
-    cdp_session = None
-    if stealth_world is not None:
-        try:
-            cdp_session = stealth_world.get_cdp_session()
-        except Exception:
-            pass
     _patch_frame_element_handles_sync(
         frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals, stealth_world, cdp_session
     )
@@ -2496,41 +2764,167 @@ def _patch_single_frame_async(
         return
     frame._human_patched = True
 
+    # Frame-scoped resolution (async): humanize via ``frame.locator(selector)`` so
+    # the selector resolves in the sub-frame's own document, while the mouse stays
+    # page-level. Mirrors the sync patcher / JS moveToFrameSelector. #428.
+    _orig_frame_click = frame.click
+    _orig_frame_dblclick = frame.dblclick
+    _orig_frame_hover = frame.hover
+    _orig_frame_type = frame.type
+    _orig_frame_fill = frame.fill
+    _orig_frame_check = frame.check
+    _orig_frame_uncheck = frame.uncheck
     _orig_frame_select_option = frame.select_option
+    _orig_frame_press = frame.press
     _orig_frame_drag_and_drop = getattr(frame, 'drag_and_drop', None)
 
+    stealth_world = getattr(page, '_stealth_world', None)
+    cdp_session_holder = getattr(page, '_cdp_session_holder', [None])
+
+    async def _get_cdp():
+        if cdp_session_holder[0] is None and stealth_world is not None:
+            try:
+                cdp_session_holder[0] = await stealth_world.get_cdp_session()
+            except Exception:
+                cdp_session_holder[0] = None
+        return cdp_session_holder[0]
+
+    def _native_kwargs(kwargs: dict) -> dict:
+        return {k: v for k, v in kwargs.items() if k != "human_config"}
+
+    def _deadline_remaining(kwargs: dict):
+        timeout = kwargs.get("timeout", 30000)
+        deadline = time.monotonic() + timeout / 1000.0
+        return lambda: max(0.0, (deadline - time.monotonic()) * 1000)
+
+    async def _frame_is_input(selector: str) -> bool:
+        try:
+            return bool(await frame.locator(selector).first.evaluate(
+                "el => { const t = el.tagName.toLowerCase();"
+                " return t === 'input' || t === 'textarea'"
+                " || el.getAttribute('contenteditable') === 'true'; }"
+            ))
+        except Exception:
+            return False
+
+    async def _frame_is_focused(selector: str) -> bool:
+        try:
+            return bool(await frame.locator(selector).first.evaluate(
+                "el => el === document.activeElement"
+            ))
+        except Exception:
+            return False
+
+    async def _move_to_frame_selector(selector: str, kwargs: dict, input_bias: bool, remaining_ms):
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        if call_cfg.idle_between_actions:
+            await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
+        loc = frame.locator(selector).first
+        try:
+            await loc.scroll_into_view_if_needed(timeout=max(1, remaining_ms()))
+        except Exception:
+            pass
+        try:
+            box = await loc.bounding_box(timeout=max(1, remaining_ms()))
+        except Exception:
+            box = None
+        if not box:
+            return None
+        is_input = input_bias or await _frame_is_input(selector)
+        target = click_target(box, is_input, call_cfg)
+        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
+        cursor.x = target.x
+        cursor.y = target.y
+        return call_cfg, is_input
+
     async def _frame_click(selector: str, **kwargs: Any) -> None:
-        await page.click(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = await _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            await _orig_frame_click(selector, **_native_kwargs(kwargs))
+            return
+        await async_human_click(raw_mouse, moved[1], moved[0])
 
     async def _frame_dblclick(selector: str, **kwargs: Any) -> None:
-        await page.dblclick(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = await _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            await _orig_frame_dblclick(selector, **_native_kwargs(kwargs))
+            return
+        await raw_mouse.down(click_count=2)
+        await async_sleep_ms(rand(30, 60))
+        await raw_mouse.up(click_count=2)
 
     async def _frame_hover(selector: str, **kwargs: Any) -> None:
-        await page.hover(selector, **kwargs)
+        remaining_ms = _deadline_remaining(kwargs)
+        moved = await _move_to_frame_selector(selector, kwargs, False, remaining_ms)
+        if moved is None:
+            await _orig_frame_hover(selector, **_native_kwargs(kwargs))
 
     async def _frame_type(selector: str, text: str, **kwargs: Any) -> None:
-        await page.type(selector, text, **kwargs)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        await async_sleep_ms(rand_range(call_cfg.field_switch_delay))
+        await _frame_click(selector, **kwargs)
+        await async_sleep_ms(rand(100, 250))
+        try:
+            cdp = await _get_cdp()
+            await async_human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp)
+        except Exception:
+            await _orig_frame_type(selector, text, **_native_kwargs(kwargs))
 
     async def _frame_fill(selector: str, value: str, **kwargs: Any) -> None:
-        await page.fill(selector, value, **kwargs)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        await async_sleep_ms(rand_range(call_cfg.field_switch_delay))
+        await _frame_click(selector, **kwargs)
+        await async_sleep_ms(rand(100, 250))
+        await originals.keyboard_press(_SELECT_ALL)
+        await async_sleep_ms(rand(30, 80))
+        await originals.keyboard_press("Backspace")
+        await async_sleep_ms(rand(50, 150))
+        try:
+            cdp = await _get_cdp()
+            await async_human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp)
+        except Exception:
+            await _orig_frame_fill(selector, value, **_native_kwargs(kwargs))
 
     async def _frame_check(selector: str, **kwargs: Any) -> None:
-        await page.check(selector, **kwargs)
+        try:
+            checked = await frame.locator(selector).first.is_checked()
+        except Exception:
+            await _orig_frame_check(selector, **_native_kwargs(kwargs))
+            return
+        if not checked:
+            try:
+                await _frame_click(selector, **kwargs)
+            except Exception:
+                await _orig_frame_check(selector, **_native_kwargs(kwargs))
 
     async def _frame_uncheck(selector: str, **kwargs: Any) -> None:
-        await page.uncheck(selector, **kwargs)
+        try:
+            checked = await frame.locator(selector).first.is_checked()
+        except Exception:
+            await _orig_frame_uncheck(selector, **_native_kwargs(kwargs))
+            return
+        if checked:
+            try:
+                await _frame_click(selector, **kwargs)
+            except Exception:
+                await _orig_frame_uncheck(selector, **_native_kwargs(kwargs))
 
     async def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
-        await page.hover(selector, **kwargs)
+        await _frame_hover(selector, **kwargs)
         await async_sleep_ms(rand(100, 300))
-        return await _orig_frame_select_option(selector, value, **kwargs)
+        return await _orig_frame_select_option(selector, value, **_native_kwargs(kwargs))
 
     async def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
-        await page.press(selector, key, **kwargs)
+        if not await _frame_is_focused(selector):
+            await _frame_click(selector, **kwargs)
+        await async_sleep_ms(rand(50, 150))
+        await originals.keyboard_press(key)
 
     async def _frame_clear(selector: str, **kwargs: Any) -> None:
-        if not await _async_is_selector_focused(page, selector):
-            await page.click(selector, **kwargs)
+        if not await _frame_is_focused(selector):
+            await _frame_click(selector, **kwargs)
         await async_sleep_ms(rand(50, 100))
         await originals.keyboard_press(_SELECT_ALL)
         await async_sleep_ms(rand(30, 80))
@@ -2570,8 +2964,6 @@ def _patch_single_frame_async(
     frame.drag_and_drop = _frame_drag_and_drop
 
     # --- Patch frame-level ElementHandle selectors (async) ---
-    stealth_world = getattr(page, '_stealth_world', None)
-    cdp_session_holder = getattr(page, '_cdp_session_holder', [None])
     _patch_frame_element_handles_async(
         frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals, stealth_world, cdp_session_holder
     )

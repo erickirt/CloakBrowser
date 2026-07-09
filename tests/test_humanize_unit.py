@@ -396,6 +396,175 @@ class TestFramePatching:
 
 
 # =========================================================================
+# 6b. iframe humanize routing (#428)
+# =========================================================================
+
+def _make_frame_for_routing(is_input=False, box=None):
+    """A MagicMock frame whose locator resolves to a real bounding box."""
+    from cloakbrowser.human import _patch_single_frame_sync, _CursorState
+    from cloakbrowser.human.config import resolve_config
+    cfg = resolve_config("default", None)
+    cursor = _CursorState()
+    page = MagicMock()
+    page._original = MagicMock()
+    page._stealth_world = None          # skip CDP path
+    frame = MagicMock()
+    frame._human_patched = False
+    loc_first = frame.locator.return_value.first
+    loc_first.bounding_box.return_value = box if box is not None else {
+        "x": 10.0, "y": 10.0, "width": 40.0, "height": 20.0}
+    loc_first.evaluate.return_value = is_input
+    loc_first.is_checked.return_value = False
+    orig_click = frame.click                                   # capture pre-patch
+    _patch_single_frame_sync(frame, page, cfg, cursor, MagicMock(), MagicMock(), MagicMock())
+    return frame, page, orig_click
+
+
+class TestFrameHumanizedRouting:
+    def test_frame_click_resolves_in_frame_not_page(self):
+        from unittest.mock import patch as mock_patch
+        frame, page, _ = _make_frame_for_routing()
+        with mock_patch("cloakbrowser.human.human_move") as mv, \
+             mock_patch("cloakbrowser.human.human_click") as clk:
+            frame.click("#btn")
+        # resolved through the frame's own locator, moved + clicked the real mouse,
+        # and NEVER re-dispatched to page.click (the #428 bug)
+        frame.locator.assert_any_call("#btn")
+        assert mv.called and clk.called
+        page.click.assert_not_called()
+
+    def test_frame_click_falls_back_to_native_when_no_box(self):
+        from unittest.mock import patch as mock_patch
+        frame, page, orig_click = _make_frame_for_routing(box=False)  # bounding_box -> falsy
+        with mock_patch("cloakbrowser.human.human_move") as mv, \
+             mock_patch("cloakbrowser.human.human_click") as clk:
+            frame.click("#btn")
+        assert not mv.called and not clk.called
+        orig_click.assert_called_once()          # native frame.click used
+        page.click.assert_not_called()
+
+
+def _make_locator_for_routing(frame_kind):
+    """Build a MagicMock locator + page.frames for _route_target testing.
+
+    frame_kind: 'main' | 'patched_sub' | 'unpatched_sub'
+    Returns (loc, page, child_frame).
+    """
+    _ensure_locator_patched()
+    page = MagicMock()
+    page._original = MagicMock()
+    main = MagicMock()
+    child = MagicMock()
+    child._human_patched = (frame_kind == "patched_sub")
+    page.main_frame = main
+    page.frames = [main, child]
+    loc = MagicMock()
+    loc.page = page
+    loc._impl_obj._selector = "#btn"
+    if frame_kind == "main":
+        loc._impl_obj._frame = main._impl_obj
+    else:
+        loc._impl_obj._frame = child._impl_obj
+    return loc, page, child
+
+
+class TestLocatorSubframeRouting:
+    def test_subframe_locator_routes_to_owning_frame(self):
+        from playwright.sync_api._generated import Locator
+        loc, page, child = _make_locator_for_routing("patched_sub")
+        Locator.click(loc)
+        child.click.assert_called_once()
+        assert child.click.call_args[0][0] == "#btn"
+        page.click.assert_not_called()
+
+    def test_mainframe_locator_routes_to_page(self):
+        from playwright.sync_api._generated import Locator
+        loc, page, child = _make_locator_for_routing("main")
+        Locator.click(loc)
+        page.click.assert_called_once()
+        assert page.click.call_args[0][0] == "#btn"
+        child.click.assert_not_called()
+
+    def test_unpatched_subframe_falls_back_to_native(self):
+        from playwright.sync_api._generated import Locator
+        loc, page, child = _make_locator_for_routing("unpatched_sub")
+        # native Locator.click is invoked on the mock; neither humanized path runs
+        Locator.click(loc)
+        child.click.assert_not_called()
+        page.click.assert_not_called()
+
+
+class TestLocatorSubframeRoutingAsync:
+    @pytest.mark.asyncio
+    async def test_async_subframe_locator_routes_to_owning_frame(self):
+        import cloakbrowser.human as h
+        from unittest.mock import AsyncMock
+        h._locator_async_patched = False
+        h._patch_locator_class_async()
+        from playwright.async_api._generated import Locator as AsyncLocator
+
+        page = MagicMock()
+        page._original = MagicMock()
+        main = MagicMock()
+        child = MagicMock()
+        child._human_patched = True
+        child.click = AsyncMock()
+        page.main_frame = main
+        page.frames = [main, child]
+        loc = MagicMock()
+        loc.page = page
+        loc._impl_obj._selector = "#btn"
+        loc._impl_obj._frame = child._impl_obj
+
+        await AsyncLocator.click(loc)
+        child.click.assert_awaited_once()
+        assert child.click.call_args[0][0] == "#btn"
+
+
+class TestFrameClickArgContract:
+    """#428 guard: _frame_click must call human_click(raw, is_input, cfg) in order.
+    The routing tests mock human_click, so a swap would slip through."""
+
+    def test_frame_click_passes_is_input_bool_and_cfg(self):
+        from unittest.mock import patch as mock_patch
+        from cloakbrowser.human.config import HumanConfig
+        frame, page, _ = _make_frame_for_routing(is_input=False)  # button
+        with mock_patch("cloakbrowser.human.human_move"), \
+             mock_patch("cloakbrowser.human.human_click") as clk:
+            frame.click("#btn")
+        args = clk.call_args[0]
+        assert isinstance(args[1], bool) and args[1] is False   # is_input
+        assert isinstance(args[2], HumanConfig)                 # cfg
+
+    def test_frame_click_marks_is_input_true_for_input(self):
+        from unittest.mock import patch as mock_patch
+        frame, page, _ = _make_frame_for_routing(is_input=True)
+        with mock_patch("cloakbrowser.human.human_move"), \
+             mock_patch("cloakbrowser.human.human_click") as clk:
+            frame.click("#inp")
+        assert clk.call_args[0][1] is True
+
+
+class TestFrameFillFocus:
+    def test_frame_fill_clicks_before_typing(self):
+        from unittest.mock import patch as mock_patch
+        frame, page, _ = _make_frame_for_routing(is_input=True)
+        with mock_patch("cloakbrowser.human.human_move"), \
+             mock_patch("cloakbrowser.human.human_click"), \
+             mock_patch("cloakbrowser.human.human_type") as htype:
+            frame.fill("#inp", "hello")
+        assert htype.called and htype.call_args[0][2] == "hello"
+
+    def test_frame_fill_falls_back_when_type_raises(self):
+        from unittest.mock import patch as mock_patch
+        frame, page, _ = _make_frame_for_routing(is_input=True)
+        with mock_patch("cloakbrowser.human.human_move"), \
+             mock_patch("cloakbrowser.human.human_click"), \
+             mock_patch("cloakbrowser.human.human_type", side_effect=RuntimeError("boom")):
+            frame.fill("#inp", "hello")  # must not raise — native fallback
+
+
+# =========================================================================
 # 7. drag_to safety
 # =========================================================================
 
@@ -646,6 +815,118 @@ class TestBrowserFill:
         val = page.locator('#searchInput').input_value()
         assert val == ''
         browser.close()
+
+
+# =========================================================================
+# 6c. iframe humanize end-to-end (#428) — real same-origin iframe over HTTP
+# =========================================================================
+
+import threading
+import http.server
+import socketserver
+import contextlib
+
+_IFRAME_PARENT = (
+    b"<html><body><h1>parent</h1>"
+    b"<iframe name='myframe' src='/child.html' width=400 height=250></iframe>"
+    b"</body></html>"
+)
+_IFRAME_CHILD = (
+    b"<html><body>"
+    b"<button id='btn' onclick=\"this.textContent='CLICKED'\">Click Me</button>"
+    b"<input id='inp'>"
+    b"</body></html>"
+)
+
+
+@contextlib.contextmanager
+def _iframe_server():
+    """Serve a parent page + same-origin child page with a button/input."""
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = _IFRAME_CHILD if self.path.startswith("/child") else _IFRAME_PARENT
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{port}/"
+    finally:
+        srv.shutdown()
+
+
+@pytest.mark.slow
+class TestBrowserIframeHumanize:
+    """Regression for #428: humanize=True must interact with elements inside
+    sub-frames instead of misrouting to the top document."""
+
+    def test_humanized_click_inside_iframe(self):
+        from cloakbrowser import launch
+        with _iframe_server() as url:
+            browser = launch(headless=True, humanize=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="networkidle")
+                frame = page.frame(name="myframe")
+                assert frame is not None
+                # the #428 case: a Locator obtained from a sub-frame
+                frame.locator("#btn").click(timeout=5000)
+                assert frame.locator("#btn").text_content() == "CLICKED"
+            finally:
+                browser.close()
+
+    def test_humanized_fill_inside_iframe(self):
+        from cloakbrowser import launch
+        with _iframe_server() as url:
+            browser = launch(headless=True, humanize=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="networkidle")
+                frame = page.frame(name="myframe")
+                frame.locator("#inp").fill("hello", timeout=5000)
+                assert frame.locator("#inp").input_value() == "hello"
+            finally:
+                browser.close()
+
+    def test_native_control_click_inside_iframe(self):
+        """Control: humanize=False must also work (parity)."""
+        from cloakbrowser import launch
+        with _iframe_server() as url:
+            browser = launch(headless=True, humanize=False)
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="networkidle")
+                frame = page.frame(name="myframe")
+                frame.locator("#btn").click(timeout=5000)
+                assert frame.locator("#btn").text_content() == "CLICKED"
+            finally:
+                browser.close()
+
+
+@pytest.mark.slow
+class TestBrowserIframeHumanizeAsync:
+    @pytest.mark.asyncio
+    async def test_async_humanized_click_inside_iframe(self):
+        from cloakbrowser import launch_async
+        with _iframe_server() as url:
+            browser = await launch_async(headless=True, humanize=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(url, wait_until="networkidle")
+                frame = page.frame(name="myframe")
+                assert frame is not None
+                await frame.locator("#btn").click(timeout=5000)
+                assert await frame.locator("#btn").text_content() == "CLICKED"
+            finally:
+                await browser.close()
 
 
 @pytest.mark.slow
