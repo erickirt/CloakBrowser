@@ -8,6 +8,17 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+## [0.4.12] — 2026-07-18
+
+- **[binary]** Chromium **150.0.7871.114.3** (Pro, all platforms) — 71 source-level patches. A full rebase onto the Chromium 150 line with the complete patch set ported forward, plus a round of coherence work. Pro license required; v146 stays free.
+  - **Closer alignment with a real Chrome install** across speech and language profiles, font handling, and graphics parameters.
+  - **More self-consistent identities** — values that a real browser reports consistently now stay consistent across repeat reads and across launch modes.
+  - **macOS coherence** — display characteristics hold together across headed and headless launches.
+  - **The reported Chrome version tracks real Chrome**, independent of the version we build from.
+  - New `--fingerprint-sapi-voices=false` for the Windows voice tables (see the flags table in the README).
+  - **Clearer license failures** — the license gate now exits with a distinct code per denial reason, which the wrapper surfaces as a specific `CloakBrowserLicenseError`.
+- **[wrapper]** Fix the first-launch banner reporting the wrong Pro major version — a Pro install downloading the Chromium 150 binary printed "Pro active (v148)", and the free-tier upgrade hint named the same stale version. Cosmetic only; binary download, verification, and launch were unaffected. Python, JS, and .NET.
+
 ## [0.4.11] — 2026-07-16
 
 - **[wrapper]** When the Pro binary refuses a launch for a license reason, `launch()` now raises a clear `CloakBrowserLicenseError` (invalid, expired, or missing key; session limit reached; license server unreachable; or a local config problem) instead of an opaque "target/browser closed" error. Non-license launch failures are re-raised unchanged. New exported `CloakBrowserLicenseError` type. Python, JavaScript, Puppeteer, and .NET.

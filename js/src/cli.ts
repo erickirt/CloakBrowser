@@ -31,7 +31,7 @@ import os from "node:os";
 import path from "node:path";
 
 const UPGRADE_HINT =
-  "→ Try the latest Pro binary (Chromium 148) free for 7 days: https://cloakbrowser.dev";
+  "→ Try the latest Pro binary (Chromium 150) free for 7 days: https://cloakbrowser.dev";
 
 const USAGE = `Usage: cloakbrowser <command>
 
