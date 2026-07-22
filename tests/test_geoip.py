@@ -78,7 +78,7 @@ def test_resolve_geo_raises_when_geoip2_missing():
         from importlib import reload
         import cloakbrowser.geoip as geoip_mod
         reload(geoip_mod)
-        with pytest.raises(ImportError, match="pip install cloakbrowser"):
+        with pytest.raises(ImportError, match=r"pip install 'cloakbrowser\[geoip\]'"):
             geoip_mod.resolve_proxy_geo("http://10.50.96.5:8888")
         # Restore
         reload(geoip_mod)

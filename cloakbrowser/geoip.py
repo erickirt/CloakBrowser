@@ -106,7 +106,7 @@ def resolve_proxy_geo_with_ip(
     except ImportError:
         raise ImportError(
             "geoip2 is required for geoip=True. Install it with:\n"
-            "  pip install cloakbrowser[geoip]"
+            "  pip install 'cloakbrowser[geoip]'"
         ) from None
 
     # Ensure the DB first — the download must NOT be bounded by the resolution
@@ -276,7 +276,7 @@ def _resolve_exit_ip(proxy_url: str | None, timeout: float | None = None) -> str
             return ip
         except httpx.UnsupportedProtocol:
             logger.warning(
-                "SOCKS5 proxy requires socksio: pip install cloakbrowser[geoip]"
+                "SOCKS5 proxy requires socksio: pip install 'cloakbrowser[geoip]'"
             )
             return None
         except Exception:
